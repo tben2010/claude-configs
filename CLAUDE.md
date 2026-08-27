@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Purpose
 
-This is a configuration repository for Claude Code plugins. It contains reusable plugin profiles that can be synced across multiple projects and computers via GitHub. The repository does not contain application code - it contains plugin configurations, custom commands, specialized agents, and MCP server configurations.
+This is a configuration repository for Claude Code plugins. It contains reusable plugin profiles that can be synced across multiple projects and computers via GitHub. The repository does not contain application code - it contains plugin configurations, skills, rules, agents, hooks, and MCP server configurations.
 
 ## Architecture
 
@@ -21,105 +21,108 @@ This repository uses Claude Code's plugin architecture where:
 
 ```
 claude-configs/
-├── profile-al-development/          # AL/Business Central development profile
+├── profile-al-development/          # AL/Business Central development profile (v5.x)
 │   ├── .claude-plugin/
-│   │   ├── plugin.json              # Plugin metadata (name, version, author)
-│   │   └── settings.json            # Plugin-specific settings
-│   ├── CLAUDE.md                    # AL coding standards and agent orchestration
-│   ├── agents/                      # 11 specialized agents for AL development
-│   │   ├── requirements-engineer.md
-│   │   ├── solution-planner.md
-│   │   ├── al-developer.md
-│   │   ├── code-reviewer.md
-│   │   ├── diagnostics-fixer.md
-│   │   ├── test-engineer.md
-│   │   ├── test-reviewer.md
-│   │   ├── bc-expert.md
-│   │   ├── docs-lookup.md
-│   │   ├── dependency-navigator.md
-│   │   └── interview.md
-│   ├── commands/                    # Slash commands (user-invocable)
-│   │   ├── dev-cycle.md            # Full development lifecycle
-│   │   ├── plan.md                 # Planning phase only
-│   │   ├── develop.md              # Development phase only
-│   │   ├── test.md                 # Testing phase only
-│   │   ├── fix.md                  # Quick bug fix workflow
-│   │   ├── estimate.md             # Estimation workflow
-│   │   ├── interview.md            # Deep requirements gathering
-│   │   ├── diagnostics.md          # Compiler diagnostics
-│   │   ├── bc-expert.md            # BC specialist consultation
-│   │   ├── docs-lookup.md          # Microsoft Docs search
-│   │   └── nav-baseapp.md          # Base app navigation
+│   │   ├── plugin.json              # Plugin metadata (name, version, agents list)
+│   │   └── settings.json            # Plugin settings (enables agent teams)
+│   ├── CLAUDE.md                    # Lead-as-Manager orchestration instructions
+│   ├── skills/                      # 17 skills (workflow, build, knowledge)
+│   │   └── <skill-name>/SKILL.md    # Each skill: frontmatter + instructions
+│   ├── rules/                       # Auto-loaded AL coding rules
+│   │   ├── al-engineering.md        # Always loaded
+│   │   ├── al-architecture.md       # Loaded when *.al files in context
+│   │   ├── al-conventions.md
+│   │   ├── al-data-access.md
+│   │   ├── al-naming.md
+│   │   └── workflow-routing.md
+│   ├── agents/                      # Subagents
+│   │   └── al-repo-summarizer.md    # AL codebase overview agent
+│   ├── hooks/                       # AL compile-on-turn-end hooks
+│   │   ├── hooks.json.disabled      # Currently DISABLED (rename to enable)
+│   │   ├── al-hook-compile.sh
+│   │   └── al-hook-record.sh
 │   ├── bc-code-intel-knowledge/     # BC Intelligence MCP knowledge base
-│   │   ├── specialists/             # Specialist personas
+│   │   ├── specialists/             # Specialist persona overrides
 │   │   └── domains/                 # Domain knowledge
+│   ├── .dev-templates/              # Templates for .dev/ task folders
 │   ├── .mcp.json                    # MCP server configuration
+│   ├── bc-code-intel-config.json    # BC Code Intelligence layer config
+│   ├── bctb-config.json             # BC Telemetry Buddy config (host-local server)
 │   └── README.md                    # Profile documentation
 ├── project-settings-template.json   # Template for project .claude/settings.json
+├── AGENTS.md                        # Same guidance for other AI coding agents (e.g. Codex)
 ├── .gitignore
 └── README.md                        # Repository overview and setup
 ```
 
-## Key Concepts
+Historical material (`CLAUDE.md.v2-backup`, `CLAUDE.md.v3-backup`, `.dev-v3-design.md`, design notes like `task-coordination.md`, `tdd-workflow.md`, `proportional-planning.md`) is kept in the profile root for reference but is not loaded by the plugin.
 
-### Document-Driven Development (AL Profile)
+## Key Concepts (AL Profile v5.x)
 
-The AL profile implements a document-driven workflow where:
+### Lead-as-Manager Architecture
 
-1. **Agents write to files, not chat** - Keeps main conversation clean
-2. **Agents read previous outputs** - Sequential context flow via `.dev/` directory
-3. **Persistent documentation** - Full audit trail in markdown files
-4. **User approval gates** - Stop between major phases for validation
+Since v3.0 (refined through v5.x), the AL profile no longer uses a fixed agent pipeline. Instead, the **main session acts as an engineering manager** that never writes code itself:
 
-### Agent Collaboration Pattern
+- **All work is delegated to subagents/teammates** - even trivial fixes - to preserve main-session context
+- **Agent teams are enabled** via `.claude-plugin/settings.json` (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`, `teammateMode: auto`)
+- **Competitive solution design**: `/plan` spawns 2-3 architect agents that debate approaches before synthesis
+- **Parallel implementation**: `/develop` spawns N developer agents on separate modules, then a 4-specialist review team (security, AL expert, performance, test coverage)
+- **Parallel test development**: `/test` spawns 4 test engineers (unit, integration, scenario, edge case)
 
-```
-User Request
-    ↓
-requirements-engineer → .dev/01-requirements.md
-    ↓
-solution-planner → .dev/02-solution-plan.md (uses MCP tools)
-    ↓
-al-developer → AL source files (reads plan)
-    ↓
-code-reviewer → .dev/03-code-review.md
-    ↓
-diagnostics-fixer → .dev/04-diagnostics.md + fixes
-    ↓
-test-engineer → .dev/05-test-plan.md + test code
-    ↓
-test-reviewer → .dev/06-test-review.md
-```
+### Workflow Routing
 
-### MCP Server Integration
+Every user request is classified by complexity and routed to the matching skill:
 
-The AL profile uses three MCP servers:
+| Complexity | Criteria | Route |
+|------------|----------|-------|
+| TRIVIAL | Single file, obvious fix | `/fix` |
+| SIMPLE | 2-3 files, pattern exists | `/fix` or `/plan` → `/develop` |
+| MEDIUM | 4-8 files, design decisions needed | `/plan` → `/develop` |
+| COMPLEX | 9+ files, new architecture | `/interview` → `/plan` → `/develop` → `/test` |
 
-1. **BC Code Intelligence MCP** (`bc-code-intelligence-mcp`)
-   - BC specialist consultations via structured personas
-   - Knowledge base in `bc-code-intel-knowledge/`
-   - Custom config via `bc-code-intel-config.json`
+### Document-Driven Development
 
-2. **Microsoft Docs MCP** (`microsoft_docs_mcp`)
-   - Official AL/BC documentation lookup
-   - HTTP-based MCP server
+- **Agents write results to files, return one-line summaries** - keeps the main conversation clean
+- **Task folder convention**: all workflow output goes to `.dev/<task-slug>/` (e.g. `.dev/credit-limit-validation/01-requirements.md`); `.dev/project-context.md` is shared across tasks and initialized once via `/init-context`
+- **User approval gates** between major phases (requirements → plan → implementation)
 
-3. **AL Dependency MCP** (`al-mcp-server`)
-   - Base app object navigation
-   - Event discovery and dependency analysis
-   - Runs via npx
+### Skills (replaced the former `commands/` directory)
 
-4. **Serena MCP** (optional project-specific MCP)
-   - IDE assistant integration
-   - Project context awareness
+Skills live in `skills/<name>/SKILL.md` with YAML frontmatter (`name`, `description`) and are user-invocable via `/<name>` or model-invoked:
+
+- **Workflow**: `interview`, `plan`, `develop`, `fix`, `test`, `document`, `init-context`
+- **Build/Run**: `compile`, `publish`, `run-tests`, `local-bc`, `al-symbols`
+- **Test quality**: `al-mutate` (mutation testing), `verify-tests` (adversarial test verification)
+- **Knowledge/Reference**: `bc-source` (BC base app source lookup), `build-tools`, `review-checklists`
+
+### Rules (auto-loaded coding standards)
+
+Rules in `rules/*.md` provide standing AL guardrails without skill invocation. Frontmatter controls loading: `al-engineering.md` is always loaded; rules with `globs: ["**/*.al"]` (naming, conventions, data access, architecture) load when AL files are in context. Coding standards belong in rules, not in skills or CLAUDE.md.
+
+### Hooks (currently disabled)
+
+`hooks/hooks.json.disabled` defines a PostToolUse recorder plus a Stop-hook that auto-compiles AL after each turn. It is deliberately disabled (rename to `hooks.json` to re-enable).
+
+## MCP Server Integration
+
+`.mcp.json` ships three portable servers:
+
+1. **Microsoft Docs MCP** (`microsoft_docs_mcp`) - HTTP server for official AL/BC documentation
+2. **AL Dependency MCP** (`al-mcp-server`) - base app object navigation, event discovery (via npx)
+3. **BC Code Intelligence MCP** (`bc-code-intelligence-mcp`) - specialist consultations; runs via `npx -y bc-code-intelligence-mcp@latest`; custom layer config in `bc-code-intel-config.json` pointing at `bc-code-intel-knowledge/`
+
+Two additional servers are **host-specific and intentionally NOT committed** (removed in c69ca94); they are added on machines where the tools are installed:
+
+- **ALCOPS** (`alcops-mcp`, a .NET tool) - AL code analysis/fix rules
+- **BC Telemetry Buddy** (`bctb-mcp`) - telemetry queries, configured via `bctb-config.json`
 
 ## Common Development Tasks
 
 ### Adding a New Plugin Profile
 
 ```bash
-cd ~/claude-configs
-mkdir -p profile-name/{.claude-plugin,commands,agents}
+cd ~/Git/claude-configs
+mkdir -p profile-name/{.claude-plugin,skills,agents,rules}
 
 # Create plugin.json
 cat > profile-name/.claude-plugin/plugin.json <<EOF
@@ -135,7 +138,7 @@ EOF
 
 # Add configuration files
 # - profile-name/CLAUDE.md
-# - profile-name/commands/*.md
+# - profile-name/skills/<skill>/SKILL.md
 # - profile-name/agents/*.md
 # - profile-name/.mcp.json (if needed)
 
@@ -144,73 +147,52 @@ git commit -m "Add profile-name plugin"
 git push
 ```
 
-### Updating an Existing Plugin
+### Creating a Skill
 
-```bash
-cd ~/claude-configs
-
-# Edit files (e.g., profile-al-development/CLAUDE.md)
-# Make improvements to agents, commands, or instructions
-
-git add profile-al-development/
-git commit -m "Improve [specific aspect]"
-git push
-
-# On other computers
-git pull  # Changes immediately available to all projects
-```
-
-### Creating a Command
-
-Commands are user-invocable slash commands stored in `commands/*.md`:
+Skills are stored in `skills/<skill-name>/SKILL.md` (kebab-case) with frontmatter:
 
 ```markdown
-# Command: /command-name
+---
+name: skill-name
+description: One-line description. Used for model-invocation matching.
+---
 
-Brief description of what this command does.
+# Skill Title
 
-## Implementation
-
-[Detailed instructions for Claude on how to execute this command]
+[Detailed instructions for Claude on how to execute this skill]
 ```
+
+Supporting files (prompts, templates) live next to `SKILL.md` in the same directory.
 
 ### Creating an Agent
 
-Agents are autonomous subprocesses stored in `agents/*.md`:
+Agents are subagent definitions in `agents/*.md` with frontmatter (`name`, `description` with usage examples, optional `model`, `memory`), followed by the agent's system prompt. Register the agent in `plugin.json` under `"agents"`.
+
+### Creating a Rule
+
+Rules are markdown files in `rules/*.md`:
 
 ```markdown
-# Agent: agent-name
+---
+description: What this rule covers
+globs: ["**/*.al"]   # optional - omit to always load
+---
 
-Role description and purpose.
-
-## Input
-
-What this agent reads (e.g., .dev/01-requirements.md)
-
-## Output
-
-What this agent produces (e.g., .dev/02-solution.md)
-
-## Process
-
-[Detailed steps the agent should follow]
+# Rule content
 ```
 
 ### Testing Plugin Changes
 
 ```bash
-# In a test AL project
+# In a test AL project with the plugin enabled in .claude/settings.json
 cd ~/path/to/test-project
-
-# Ensure plugin is enabled in .claude/settings.json
-cat .claude/settings.json
-
-# Start Claude Code and test the change
 claude
 
-# Test specific command
-/command-name "test input"
+# Test a specific skill
+/plan "test input"
 ```
+
+Note: installed plugins are cached under `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`. After changing the repo, make sure the cache is updated (bump the version and/or reinstall/update the plugin) or the old copy keeps loading.
 
 ## Configuration Hierarchy
 
@@ -225,9 +207,10 @@ Claude Code loads configurations in this order (later overrides earlier):
 
 ## File Naming Conventions
 
-- **Commands**: `commands/command-name.md` (kebab-case)
+- **Skills**: `skills/skill-name/SKILL.md` (kebab-case directory)
 - **Agents**: `agents/agent-name.md` (kebab-case)
-- **Config**: `.claude-plugin/plugin.json`, `.mcp.json`
+- **Rules**: `rules/rule-name.md` (kebab-case)
+- **Config**: `.claude-plugin/plugin.json`, `.claude-plugin/settings.json`, `.mcp.json`
 - **Documentation**: `CLAUDE.md` (uppercase), `README.md`
 
 ## MCP Configuration Structure
@@ -249,17 +232,14 @@ MCP servers are configured in `.mcp.json` at the plugin root:
 }
 ```
 
+Keep committed entries portable (npx, `~` paths). Host-specific servers (absolute paths, locally installed tools) belong only in the local machine's copy, not in git.
+
 ## Git Workflow
 
-This repository should be cloned to `~/claude-configs/` and kept synchronized:
+This repository is cloned to `~/Git/claude-configs/` and kept synchronized:
 
 ```bash
-# Initial setup
-cd ~
-git clone git@github.com:YOUR_USERNAME/claude-configs.git
-
-# Regular sync
-cd ~/claude-configs
+cd ~/Git/claude-configs
 git pull  # Get updates from other computers
 # ... make changes ...
 git add .
@@ -267,57 +247,44 @@ git commit -m "Descriptive message"
 git push  # Share with other computers
 ```
 
+Remotes: `origin` is the user's fork; `upstream` points at the original community repo for periodic diffing.
+
 ## Security Considerations
 
 - Never commit credentials, API keys, or certificates
 - Use `.gitignore` to prevent accidental commits
 - Keep authentication in project-local files (`.env`, gitignored)
-- The `.gitignore` already excludes common sensitive patterns
+- Keep host-specific absolute paths out of committed configs
 
 ## AL Profile Specifics
 
 ### Approval Gates
 
-The AL profile implements mandatory approval gates in workflows:
+Workflows stop for user approval between major phases (via AskUserQuestion with Approve/Refine/Stop):
 
-1. After requirements analysis - user must approve before solution planning
-2. After solution planning - user must approve before implementation
-3. After code review - user must approve before testing
+1. After requirements/interview - before solution planning
+2. After solution planning - before implementation
+3. After code review - before testing
 
-These gates prevent wasted work and ensure user validation at each phase.
-
-### Iteration Pattern
-
-Development phase uses iterative refinement:
-
-```
-al-developer → code
-    ↓
-code-reviewer → review
-    ↓
-If Critical/High issues → ITERATE back to al-developer
-If Minor issues → Continue to diagnostics-fixer
-```
+`/fix` deliberately skips approval gates for fast iteration (3-tier classification instead).
 
 ### AL Compilation
 
-The profile includes an `al-compile` bash script that:
+Always use the `al-compile` wrapper (via the `/compile` skill) instead of manual AL compiler commands. It auto-detects the VS Code AL extension version, workspace structure, `.alpackages` directories, and ruleset files, and includes standard analyzers by default.
 
-- Auto-detects VS Code AL extension and uses matching compiler version
-- Auto-detects workspace structure (single vs multi-app)
-- Auto-finds all `.alpackages` directories
-- Auto-applies ruleset files
-- Includes standard analyzers by default
-- Handles complex compilation scenarios automatically
+### Test Execution
 
-Always use `al-compile` instead of manual AL compiler commands.
+- `al-runner` for fast pure-logic tests (no BC instance required)
+- `bc-test` / `/run-tests` for integration tests against a running BC instance
+- `/local-bc` manages a local BC instance (host vs container auto-detected)
+- `/al-mutate` and `/verify-tests` prove test suites are meaningful
 
 ## Plugin Version Management
 
 Plugins use semantic versioning in `plugin.json`:
 
-- **Major**: Breaking changes (e.g., renamed commands, removed agents)
-- **Minor**: New features (e.g., new commands, enhanced agents)
+- **Major**: Breaking changes (e.g., renamed skills, removed agents)
+- **Minor**: New features (e.g., new skills, enhanced agents)
 - **Patch**: Bug fixes, documentation improvements
 
 Update the version in `plugin.json` and document changes in the profile's README.md.
@@ -334,31 +301,31 @@ Update the version in `plugin.json` and document changes in the profile's README
 ### MCP Server Issues
 
 1. Check `.mcp.json` syntax
-2. Verify executable paths (e.g., `bc-code-intelligence-mcp` in PATH)
+2. Verify executable paths (e.g., `npx`, `alcops-mcp` in PATH)
 3. Test MCP servers independently
 4. Check environment variables are set correctly
 
-### Command Not Found
+### Skill Not Found
 
 1. Ensure plugin is enabled in project settings
-2. Command files must be in `commands/` directory
-3. Command names are kebab-case without `.md` extension
+2. Skill must be at `skills/<name>/SKILL.md` with valid frontmatter
+3. Skill names are kebab-case
 4. Restart Claude Code session if needed
 
 ### Changes Not Appearing
 
 1. Settings and CLAUDE.md hot-reload automatically
-2. For command/agent changes, start a new Claude Code session
-3. Verify changes are committed and pushed
-4. On other computers, verify `git pull` was run
+2. For skill/agent changes, start a new Claude Code session
+3. Verify changes are committed and pushed; on other computers run `git pull`
+4. Check the plugin cache (`~/.claude/plugins/cache/`) isn't serving a stale version
 
 ## Best Practices
 
 1. **Test before pushing** - Verify changes work in a test project
 2. **Clear commit messages** - Describe what changed and why
-3. **Update documentation** - Keep READMEs in sync with changes
+3. **Update documentation** - Keep READMEs and this file in sync with changes
 4. **Semantic versioning** - Increment version in plugin.json
 5. **Backward compatibility** - Avoid breaking changes when possible
 6. **Scope plugins narrowly** - One technology/domain per plugin
-7. **Document agent inputs/outputs** - Clear data flow in agent definitions
+7. **Standards in rules, orchestration in CLAUDE.md, workflows in skills** - keep concerns separated
 8. **Use approval gates** - Stop for user validation at major decision points
