@@ -96,7 +96,8 @@ alle unter https://learn.microsoft.com (Suchbegriffe siehe Skill-Doku).
 - ⬜ Generalprobe der Kundenpfade in der Cloud-Sandbox (AppSource-Range nur via VS-Code-Dev-Publish, PTE0001).
 
 ### C.4 AL-Go-Anbindung
-- ⬜ `deliverToAppSource` mit `productId`, `mainAppFolder`, `continuousDelivery: false`. `includeDependencies` nur bewusst setzen.
+- ⬜ `deliverToAppSource` im AL-Go-Projekt dieser App: `mainAppFolder` = dieser App-Ordner, `continuousDelivery: false`, `includeDependencies` nur bewusst setzen; von den productIds anderer Projekte im Repo getrennt (Verify: `deliverToAppSource`).
+- ⬜ `productId` des eigenen Partner-Center-Offers eingetragen (Verify: `productId`; leer = Offer fehlt noch, AL-Go liefert dann nichts).
 - ⬜ `trustedSigning`-Block vorhanden; CI-Guards in PR-Handler, CICD, CreateRelease.
 
 ---

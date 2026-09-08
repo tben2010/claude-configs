@@ -42,10 +42,11 @@ def fetch(url, timeout=15):
         return None, str(e)
 
 def git_added_at(project, path):
-    """Unix-Zeit des Commits, der die Datei angelegt hat; None ohne Git-Historie.
-    Bewusst ohne --follow: Git würde eine byte-gleiche Kopie sonst dem Original zuordnen."""
+    """Unix-Zeit des Commits, der die Datei unter diesem Pfad angelegt hat; None ohne Git-Historie (auch: noch nicht committet).
+    Bewusst ohne --follow und mit --no-renames: Git würde eine byte-gleiche Kopie sonst dem Original zuordnen,
+    und eine verschobene Datei soll ab dem Verschiebe-Commit zählen."""
     try:
-        out = subprocess.run(["git", "-C", project, "log", "--diff-filter=A", "--format=%ct", "--", path],
+        out = subprocess.run(["git", "-C", project, "log", "--no-renames", "--diff-filter=A", "--format=%ct", "--", path],
                              capture_output=True, text=True, timeout=10).stdout.split()
         return int(out[-1]) if out else None
     except Exception:
@@ -58,17 +59,46 @@ def find_app_folder(project, explicit):
     folders = s.get("appFolders") or []
     if folders:
         return os.path.join(project, folders[0])
-    for p in glob.glob(os.path.join(project, "*", "app.json")):
+    for p in all_app_jsons(project):
         a = load_json(p) or {}
         rng = a.get("idRanges") or []
         if any(r.get("from", 0) >= 50000 for r in rng):
             return os.path.dirname(p)
     return None
 
+def find_algo_dir(project, app_dir):
+    """Nächstes AL-Go-Projekt oberhalb des App-Ordners (Ordner mit .AL-Go/settings.json), sonst die Projektwurzel.
+    Multi-Projekt-Repos (AL-Go `projects`-Layout) haben je Unterordner eine eigene settings.json."""
+    root = os.path.abspath(project)
+    d = os.path.abspath(app_dir)
+    while True:
+        if os.path.exists(os.path.join(d, ".AL-Go", "settings.json")):
+            return d
+        parent = os.path.dirname(d)
+        if d == root or parent == d:
+            return root
+        d = parent
+
+def algo_projects(project):
+    """Alle AL-Go-Projekte im Repo → {relativer Name: settings}. Wurzel = '.', Unterprojekte bis zwei Ebenen tief
+    (gleiche Suchregel wie AL-Go GetProjectsFromRepository)."""
+    out = {}
+    subs = glob.glob(os.path.join(project, "*", ".AL-Go", "settings.json")) + glob.glob(os.path.join(project, "*", "*", ".AL-Go", "settings.json"))
+    for rel in ["."] + sorted(os.path.relpath(os.path.dirname(os.path.dirname(p)), project) for p in subs):
+        st = load_json(os.path.join(project, rel, ".AL-Go", "settings.json"))
+        if st is not None:
+            out[rel] = st
+    return out
+
+def all_app_jsons(project):
+    """app.json aller Apps: direkt unter der Wurzel oder eine Ebene tiefer (AL-Go-Unterprojekte)."""
+    found = glob.glob(os.path.join(project, "*", "app.json")) + glob.glob(os.path.join(project, "*", "*", "app.json"))
+    return sorted(p for p in found if not re.search(r"[\\/]\.(alpackages|buildartifacts|dependencies|output)[\\/]", p))
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--project", default=".")
-    ap.add_argument("--app", default=None, help="App-Ordner relativ zum Projekt")
+    ap.add_argument("--app", default=None, help="App-Ordner relativ zum Projekt (bei Unterprojekten mit Pfad, z. B. 'Ticker/cdmTicker App')")
     ap.add_argument("--out", default=None)
     ap.add_argument("--no-web", action="store_true", help="keine HTTP-Prüfungen")
     args = ap.parse_args()
@@ -80,6 +110,8 @@ def main():
         sys.exit(2)
     app = load_json(os.path.join(app_dir, "app.json")) or {}
     app_name = app.get("name", "")
+    algo_dir = find_algo_dir(project, app_dir)
+    algo_name = os.path.relpath(algo_dir, project)
 
     # ---------- C.1 Manifest ----------
     for key in ("name", "publisher", "brief", "description", "help", "EULA", "privacyStatement", "url", "contextSensitiveHelpUrl", "logo"):
@@ -123,7 +155,7 @@ def main():
         try:
             own = hashlib.md5(open(logo, "rb").read()).hexdigest()
             dupes = []
-            for other_json in glob.glob(os.path.join(project, "*", "app.json")):
+            for other_json in all_app_jsons(project):
                 other_dir = os.path.dirname(other_json)
                 if os.path.abspath(other_dir) == os.path.abspath(app_dir):
                     continue
@@ -134,7 +166,8 @@ def main():
             if dupes:
                 # Original oder Kopie? Das ältere Logo laut Git-Historie gilt als Original.
                 own_t = git_added_at(project, logo)
-                newer_than_me = [n for n, pth in dupes if own_t is not None and (git_added_at(project, pth) or 0) > own_t]
+                # eine Kopie ohne Git-Historie (noch nicht committet) ist jünger als jedes committete Original
+                newer_than_me = [n for n, pth in dupes if own_t is not None and (git_added_at(project, pth) or float("inf")) > own_t]
                 names = [n for n, _ in dupes]
                 if own_t is not None and len(newer_than_me) == len(dupes):
                     add("B.3", "logo-unique", WARN, f"Logo wurde von {names} kopiert (diese App ist laut Git das Original) — die andere App braucht ein eigenes Logo")
@@ -185,22 +218,48 @@ def main():
         "Interfaces ohne `Access = Internal` (nach Einreichung eingefroren): " + (", ".join(pub_ifaces) if pub_ifaces else "keine"))
 
     # ---------- C.4 AL-Go ----------
-    algo = load_json(os.path.join(project, ".AL-Go", "settings.json")) or {}
+    # Maßgeblich ist das AL-Go-Projekt, in dem die App liegt (Wurzel oder Unterprojekt), nicht zwingend die Wurzel.
+    algo = load_json(os.path.join(algo_dir, ".AL-Go", "settings.json")) or {}
     d = algo.get("deliverToAppSource") or {}
-    app_folder_name = os.path.basename(os.path.normpath(app_dir))
-    app_folders = algo.get("appFolders") or []
-    main_folder = d.get("mainAppFolder")
-    if not d.get("productId"):
-        add("C.4", "deliverToAppSource", FAIL, "deliverToAppSource FEHLT")
-    elif main_folder and os.path.normpath(main_folder) != app_folder_name:
+    app_folder_rel = os.path.normpath(os.path.relpath(app_dir, algo_dir))
+    app_folders = [os.path.normpath(f) for f in (algo.get("appFolders") or [])]
+    main_folder = os.path.normpath(d["mainAppFolder"]) if d.get("mainAppFolder") else None
+    product_id = (d.get("productId") or "").strip()
+    proj_label = f"AL-Go-Projekt `{algo_name}`"
+    # productIds der anderen AL-Go-Projekte: eine kopierte ID würde diese App an das falsche Offer liefern
+    other_ids = {}
+    for name, st in algo_projects(project).items():
+        if os.path.abspath(os.path.join(project, name)) == algo_dir:
+            continue
+        pid = ((st.get("deliverToAppSource") or {}).get("productId") or "").strip().lower()
+        if pid:
+            other_ids[pid] = name
+    if app_folder_rel not in app_folders:
         add("C.4", "deliverToAppSource", FAIL,
-            f"deliverToAppSource.productId `{d.get('productId')}` gehört zu `{main_folder}`, nicht zu `{app_folder_name}` — eigenes Offer + eigene productId nötig (Multi-App: AL-Go `projects`-Layout oder eigenes Repo)")
+            f"App-Ordner `{app_folder_rel}` steht nicht in appFolders von {proj_label} ({app_folders}) — AL-Go baut und liefert die App nicht")
+    elif not d:
+        add("C.4", "deliverToAppSource", FAIL, f"deliverToAppSource FEHLT in {proj_label} (AL-Go behandelt das Projekt als Library-Projekt)")
+    elif main_folder and main_folder != app_folder_rel:
+        add("C.4", "deliverToAppSource", FAIL,
+            f"deliverToAppSource.productId `{product_id}` gehört zu `{main_folder}`, nicht zu `{app_folder_rel}` — eigenes Offer + eigene productId nötig (Multi-App: AL-Go `projects`-Layout oder eigenes Repo)")
     elif not main_folder and len(app_folders) > 1:
         add("C.4", "deliverToAppSource", WARN,
-            f"deliverToAppSource ohne mainAppFolder bei {len(app_folders)} appFolders — AL-Go liefert dann alle Apps an productId `{d.get('productId')}`")
+            f"deliverToAppSource ohne mainAppFolder bei {len(app_folders)} appFolders in {proj_label} — AL-Go liefert dann alle Apps an productId `{product_id}`")
+    elif product_id and product_id.lower() in other_ids:
+        add("C.4", "deliverToAppSource", FAIL,
+            f"productId `{product_id}` ist dieselbe wie im AL-Go-Projekt `{other_ids[product_id.lower()]}` — jedes Produkt braucht ein eigenes Offer mit eigener productId")
     else:
         add("C.4", "deliverToAppSource", OK,
-            f"deliverToAppSource productId gesetzt, continuousDelivery={d.get('continuousDelivery')}, mainAppFolder={main_folder or app_folder_name}")
+            f"{proj_label}: mainAppFolder=`{main_folder or app_folder_rel}`, appFolders={app_folders}, continuousDelivery={d.get('continuousDelivery')}"
+            + (f" — getrennt von den productIds der Projekte {sorted(set(other_ids.values()))}" if other_ids else ""))
+    guid_re = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+    if d and not product_id:
+        add("C.4", "productId", FAIL,
+            f"productId in {proj_label} ist leer — Partner-Center-Offer noch nicht angelegt; bis dahin behandelt AL-Go das Projekt als Library-Projekt und liefert nichts an AppSource")
+    elif d and not guid_re.match(product_id):
+        add("C.4", "productId", FAIL, f"productId `{product_id}` ist keine GUID")
+    elif d:
+        add("C.4", "productId", OK, f"productId `{product_id}`")
     gh = load_json(os.path.join(project, ".github", "AL-Go-Settings.json")) or {}
     ts = gh.get("trustedSigning") or {}
     add("C.4", "trustedSigning", OK if ts.get("Account") and ts.get("CertificateProfile") else FAIL,
@@ -211,7 +270,7 @@ def main():
     ivt_ids = {(x.get("id") or "").lower() for x in (app.get("internalsVisibleTo") or []) if x.get("id")}
     test_folders = algo.get("testFolders") or []
     linked = []   # (folder, name, n_test_codeunits, in_testFolders)
-    for tj in glob.glob(os.path.join(project, "*", "app.json")):
+    for tj in all_app_jsons(project):
         tdir = os.path.dirname(tj)
         if os.path.abspath(tdir) == os.path.abspath(app_dir):
             continue
@@ -223,7 +282,7 @@ def main():
             txt = open(al, encoding="utf-8", errors="ignore").read()
             if re.search(r"Subtype\s*=\s*Test\s*;", txt):
                 n_tests += 1
-        tname = os.path.basename(os.path.normpath(tdir))
+        tname = os.path.normpath(os.path.relpath(tdir, algo_dir))
         linked.append((tname, t.get("name") or tname, n_tests, tname in [os.path.normpath(f) for f in test_folders]))
     if not ivt_ids:
         add("C.2", "test-app", WARN, "app.json hat kein `internalsVisibleTo` — keine Test-App verknüpft (Projektregel: jede App hat eine Test-App)")
@@ -233,7 +292,7 @@ def main():
         problems = []
         for folder, name, n, in_tf in linked:
             if not in_tf:
-                problems.append(f"`{folder}` fehlt in .AL-Go testFolders")
+                problems.append(f"`{folder}` fehlt in testFolders von AL-Go-Projekt `{algo_name}`")
             if n == 0:
                 problems.append(f"`{folder}` enthält keine Test-Codeunit (Subtype = Test)")
         desc = ", ".join(f"`{f}` ({n} Test-Codeunits)" for f, _, n, _ in linked)
@@ -270,7 +329,7 @@ def main():
     # ---------- Report ----------
     counts = {s: sum(1 for r in results if r[2] == s) for s in (OK, FAIL, WARN, SKIP)}
     lines = [f"# AppSource-Readiness-Report — {app_name}", "",
-             f"Projekt: `{project}` · App-Ordner: `{os.path.relpath(app_dir, project)}` · Version {app.get('version')} · Stand {date.today().isoformat()}", "",
+             f"Projekt: `{project}` · App-Ordner: `{os.path.relpath(app_dir, project)}` · AL-Go-Projekt: `{algo_name}` · Version {app.get('version')} · Stand {date.today().isoformat()}", "",
              f"**{counts[OK]} ✅ · {counts[FAIL]} ❌ · {counts[WARN]} ⚠️ · {counts[SKIP]} ⬜**", "",
              "| Teil | Prüfung | Status | Befund |", "|---|---|---|---|"]
     for sec, cid, st, msg in sorted(results, key=lambda r: (r[0], r[1])):

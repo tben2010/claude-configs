@@ -20,7 +20,12 @@ einen **Go-to-Market-Block** nach dem Go Live.
 /appsource-launch                 # Erstanlage oder Aktualisierung
 /appsource-launch verify          # nur die automatischen Prüfungen ausführen
 /appsource-launch --app "<Ordner>" # App-Ordner explizit angeben (Multi-App-Projekte)
+/appsource-launch --app "Ticker/cdmTicker App"   # App in einem AL-Go-Unterprojekt (projects-Layout): Pfad relativ zur Repo-Wurzel
 ```
+
+Multi-Projekt-Repos (AL-Go `projects`-Layout, z. B. Bridge in der Wurzel `.` und Ticker in `Ticker/`): `--project` bleibt
+die Repo-Wurzel, `--app` bekommt den Pfad inklusive Unterprojekt. Das Skript nimmt automatisch die `.AL-Go/settings.json`
+des nächsten Ordners oberhalb des App-Ordners (Unterprojekt), `.github/AL-Go-Settings.json` weiterhin aus der Wurzel.
 
 ## Ausgabe
 
@@ -37,7 +42,8 @@ einen **Go-to-Market-Block** nach dem Go Live.
 ### Schritt 1: Kontext einsammeln (kein Subagent nötig)
 
 1. App-Ordner bestimmen: `$ARGUMENTS --app`, sonst `appFolders[0]` aus `.AL-Go/settings.json`,
-   sonst der Ordner mit `app.json` und `idRanges` ≥ 50000.
+   sonst der Ordner mit `app.json` und `idRanges` ≥ 50000. Liegt die App in einem AL-Go-Unterprojekt
+   (`<Unterordner>/.AL-Go/settings.json`), gilt dessen settings.json für Schritt 3 und C.4.
 2. Aus `app.json` lesen: `name`, `publisher`, `version`, `brief`, `description`, `help`,
    `EULA`, `privacyStatement`, `url`, `contextSensitiveHelpUrl`, `logo`,
    `applicationInsightsConnectionString`, `idRanges`, `resourceExposurePolicy`.
@@ -58,7 +64,7 @@ python3 <skill-dir>/scripts/verify-readiness.py --project . [--app "<Ordner>"] -
 Das Skript prüft u. a.: Pflichtfelder in app.json, Publisher-Schreibweise, Logo-Format
 (PNG, 216–350 px quadratisch, kein Duplikat eines anderen App-Logos im Repo), AppSourceCop + Affix, Ruleset-Begründungen, Entitlements
 mit echter Service-ID, Translations, `resourceExposurePolicy`, App-Insights-String,
-`deliverToAppSource` (productId muss zu **dieser** App gehören, nicht zu einer anderen im Repo), `trustedSigning`, Test-App (in `testFolders`, per `internalsVisibleTo` verknüpft, mit Test-Codeunit), Erreichbarkeit aller Links (https, kein 404),
+`deliverToAppSource` (zwei Zeilen: `deliverToAppSource` = die App liegt im richtigen AL-Go-Projekt mit passendem `mainAppFolder` und ist von den productIds der anderen Projekte getrennt; `productId` = GUID eingetragen — leer heißt „Offer noch nicht angelegt“, AL-Go behandelt das Projekt dann als Library-Projekt), `trustedSigning`, Test-App (in `testFolders`, per `internalsVisibleTo` verknüpft, mit Test-Codeunit), Erreichbarkeit aller Links (https, kein 404),
 ob die Datenschutzseite die App namentlich nennt, ob die Support-Seite mehr als zwei
 Kontaktwege hat, Branding-Verstöße ("BC", "D365", "NAV") auf den Seiten, und Screenshots
 unter `.dev/appsource-assets/screenshots/` (PNG 1280×720, mindestens 3).
