@@ -4,7 +4,7 @@
 Nur Standardbibliothek. Ausgabe: Markdown-Report (stdout oder --out).
 Exit-Code 0 = keine Fehler, 1 = mindestens ein FAIL.
 """
-import argparse, json, os, re, struct, sys, urllib.request, urllib.error, glob
+import argparse, json, os, re, struct, sys, urllib.request, urllib.error, glob, hashlib, subprocess
 from datetime import date
 
 OK, FAIL, WARN, SKIP = "✅", "❌", "⚠️", "⬜"
@@ -40,6 +40,16 @@ def fetch(url, timeout=15):
         return e.code, ""
     except Exception as e:
         return None, str(e)
+
+def git_added_at(project, path):
+    """Unix-Zeit des Commits, der die Datei angelegt hat; None ohne Git-Historie.
+    Bewusst ohne --follow: Git würde eine byte-gleiche Kopie sonst dem Original zuordnen."""
+    try:
+        out = subprocess.run(["git", "-C", project, "log", "--diff-filter=A", "--format=%ct", "--", path],
+                             capture_output=True, text=True, timeout=10).stdout.split()
+        return int(out[-1]) if out else None
+    except Exception:
+        return None
 
 def find_app_folder(project, explicit):
     if explicit:
@@ -109,6 +119,31 @@ def main():
             w, h = sz
             good = w == h and 216 <= w <= 350
             add("B.3", "logo", OK if good else FAIL, f"Logo {w}×{h} px" + ("" if good else " — Vorgabe: quadratisch, 216–350 px"))
+        # Duplikat-Prüfung: gleiches Logo wie eine andere App im Repo?
+        try:
+            own = hashlib.md5(open(logo, "rb").read()).hexdigest()
+            dupes = []
+            for other_json in glob.glob(os.path.join(project, "*", "app.json")):
+                other_dir = os.path.dirname(other_json)
+                if os.path.abspath(other_dir) == os.path.abspath(app_dir):
+                    continue
+                other = load_json(other_json) or {}
+                other_logo = os.path.join(other_dir, other.get("logo", "")) if other.get("logo") else None
+                if other_logo and os.path.exists(other_logo) and hashlib.md5(open(other_logo, "rb").read()).hexdigest() == own:
+                    dupes.append((other.get("name") or os.path.basename(other_dir), other_logo))
+            if dupes:
+                # Original oder Kopie? Das ältere Logo laut Git-Historie gilt als Original.
+                own_t = git_added_at(project, logo)
+                newer_than_me = [n for n, pth in dupes if own_t is not None and (git_added_at(project, pth) or 0) > own_t]
+                names = [n for n, _ in dupes]
+                if own_t is not None and len(newer_than_me) == len(dupes):
+                    add("B.3", "logo-unique", WARN, f"Logo wurde von {names} kopiert (diese App ist laut Git das Original) — die andere App braucht ein eigenes Logo")
+                else:
+                    add("B.3", "logo-unique", FAIL, f"Logo ist byte-identisch mit dem Logo von: {names} — jede App braucht ein eigenes Logo")
+            else:
+                add("B.3", "logo-unique", OK, "Logo ist keine Kopie eines anderen App-Logos im Repo")
+        except Exception as e:
+            add("B.3", "logo-unique", SKIP, f"Duplikat-Prüfung nicht möglich: {e}")
     else:
         add("B.3", "logo", FAIL, "Logo-Datei fehlt")
     shots = sorted(glob.glob(os.path.join(project, ".dev", "appsource-assets", "screenshots", "*.png")))
@@ -152,13 +187,57 @@ def main():
     # ---------- C.4 AL-Go ----------
     algo = load_json(os.path.join(project, ".AL-Go", "settings.json")) or {}
     d = algo.get("deliverToAppSource") or {}
-    add("C.4", "deliverToAppSource", OK if d.get("productId") else FAIL,
-        "deliverToAppSource " + (f"productId gesetzt, continuousDelivery={d.get('continuousDelivery')}, mainAppFolder={d.get('mainAppFolder')}" if d.get("productId") else "FEHLT"))
+    app_folder_name = os.path.basename(os.path.normpath(app_dir))
+    app_folders = algo.get("appFolders") or []
+    main_folder = d.get("mainAppFolder")
+    if not d.get("productId"):
+        add("C.4", "deliverToAppSource", FAIL, "deliverToAppSource FEHLT")
+    elif main_folder and os.path.normpath(main_folder) != app_folder_name:
+        add("C.4", "deliverToAppSource", FAIL,
+            f"deliverToAppSource.productId `{d.get('productId')}` gehört zu `{main_folder}`, nicht zu `{app_folder_name}` — eigenes Offer + eigene productId nötig (Multi-App: AL-Go `projects`-Layout oder eigenes Repo)")
+    elif not main_folder and len(app_folders) > 1:
+        add("C.4", "deliverToAppSource", WARN,
+            f"deliverToAppSource ohne mainAppFolder bei {len(app_folders)} appFolders — AL-Go liefert dann alle Apps an productId `{d.get('productId')}`")
+    else:
+        add("C.4", "deliverToAppSource", OK,
+            f"deliverToAppSource productId gesetzt, continuousDelivery={d.get('continuousDelivery')}, mainAppFolder={main_folder or app_folder_name}")
     gh = load_json(os.path.join(project, ".github", "AL-Go-Settings.json")) or {}
     ts = gh.get("trustedSigning") or {}
     add("C.4", "trustedSigning", OK if ts.get("Account") and ts.get("CertificateProfile") else FAIL,
         "trustedSigning " + (f"Account={ts.get('Account')}, Profile={ts.get('CertificateProfile')}" if ts else "FEHLT (unsignierte Apps werden abgelehnt)"))
     add("C.4", "publish-workflow", OK if os.path.exists(os.path.join(project, ".github", "workflows", "PublishToAppSource.yaml")) else FAIL, "Workflow PublishToAppSource.yaml")
+
+    # ---------- C.2 Test-App ----------
+    ivt_ids = {(x.get("id") or "").lower() for x in (app.get("internalsVisibleTo") or []) if x.get("id")}
+    test_folders = algo.get("testFolders") or []
+    linked = []   # (folder, name, n_test_codeunits, in_testFolders)
+    for tj in glob.glob(os.path.join(project, "*", "app.json")):
+        tdir = os.path.dirname(tj)
+        if os.path.abspath(tdir) == os.path.abspath(app_dir):
+            continue
+        t = load_json(tj) or {}
+        if (t.get("id") or "").lower() not in ivt_ids:
+            continue
+        n_tests = 0
+        for al in glob.glob(os.path.join(tdir, "**", "*.al"), recursive=True):
+            txt = open(al, encoding="utf-8", errors="ignore").read()
+            if re.search(r"Subtype\s*=\s*Test\s*;", txt):
+                n_tests += 1
+        tname = os.path.basename(os.path.normpath(tdir))
+        linked.append((tname, t.get("name") or tname, n_tests, tname in [os.path.normpath(f) for f in test_folders]))
+    if not ivt_ids:
+        add("C.2", "test-app", WARN, "app.json hat kein `internalsVisibleTo` — keine Test-App verknüpft (Projektregel: jede App hat eine Test-App)")
+    elif not linked:
+        add("C.2", "test-app", FAIL, f"internalsVisibleTo zeigt auf {sorted(ivt_ids)}, aber kein Ordner im Repo hat diese App-ID")
+    else:
+        problems = []
+        for folder, name, n, in_tf in linked:
+            if not in_tf:
+                problems.append(f"`{folder}` fehlt in .AL-Go testFolders")
+            if n == 0:
+                problems.append(f"`{folder}` enthält keine Test-Codeunit (Subtype = Test)")
+        desc = ", ".join(f"`{f}` ({n} Test-Codeunits)" for f, _, n, _ in linked)
+        add("C.2", "test-app", FAIL if problems else OK, "Test-App: " + desc + (" — " + "; ".join(problems) if problems else ""))
 
     # ---------- B.4 Links ----------
     links = {"help": app.get("help"), "EULA": app.get("EULA"), "privacyStatement": app.get("privacyStatement"), "url": app.get("url"), "contextSensitiveHelpUrl": app.get("contextSensitiveHelpUrl")}

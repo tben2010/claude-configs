@@ -88,6 +88,7 @@ alle unter https://learn.microsoft.com (Suchbegriffe siehe Skill-Doku).
 - ⬜ Assisted Setup + Checklist; Retention Policy für Log-Tabellen; Copilot-Capability in Install und Upgrade (falls KI); Learn-More-URL auf die Hilfeseite.
 - ⬜ Übersetzungen (mind. en-US), Source-Texte Englisch.
 - ⬜ DataClassification auf allen Feldern (AS0016).
+- ⬜ Test-App vorhanden: in `.AL-Go` `testFolders`, per `internalsVisibleTo` aus der Haupt-App verknüpft, mindestens eine Test-Codeunit, vom AppSourceCop-Affix ausgenommen.
 
 ### C.3 Vor dem API-Freeze (nur manuell bestätigen)
 - ⬜ Projekt-Review; alle „vor Submission fixen"-Punkte geschlossen.
