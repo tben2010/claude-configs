@@ -52,6 +52,7 @@ Classify every user request by complexity, then invoke the matching skill:
 - `/fix` — Quick fix (3 tiers: haiku/sonnet/opus)
 - `/test` — Parallel test development (4 engineers)
 - `/document` — Technical documentation generation
+- `/appsource-launch` — AppSource-Launch-Checkliste (Marketing + Technik + Einreichung), automatische Readiness-Prüfung, Listing-Vorlagen
 
 ### Build Skills (invoke with /)
 - `/compile` — Run al-compile with analyzer options
