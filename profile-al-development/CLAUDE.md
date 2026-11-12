@@ -53,6 +53,7 @@ Classify every user request by complexity, then invoke the matching skill:
 - `/test` — Parallel test development (4 engineers)
 - `/document` — Technical documentation generation
 - `/appsource-launch` — AppSource-Launch-Checkliste (Marketing + Technik + Einreichung), automatische Readiness-Prüfung, Listing-Vorlagen
+- `/appsource-release` — Release über AL-Go erstellen („Create release“) und diese Version bei AppSource einreichen („Publish To AppSource“), mit Vorprüfung und Freigabe
 
 ### Build Skills (invoke with /)
 - `/compile` — Run al-compile with analyzer options
